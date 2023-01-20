@@ -3,8 +3,8 @@
 
 using namespace std;
 using namespace cv;
-int thres = 50;
-int N = 11;
+int thresh = 50;
+int N = 5;
 
 void regularDetection(Mat image) {
 
@@ -92,45 +92,107 @@ static double angle(Point pt1, Point pt2, Point pt0)
 	return (dx1 * dx2 + dy1 * dy2) / sqrt((dx1 * dx1 + dy1 * dy1) * (dx2 * dx2 + dy2 * dy2) + 1e-10);
 }
 
+static void drawSquares(Mat& image, const vector<vector<Point> >& squares)
+{
+	for (size_t i = 0; i < squares.size(); i++)
+	{
+
+		const Point* p = &squares[i][0];
+		int n = (int)squares[i].size();
+		//dont detect the border
+		if (p->x > 3 && p->y > 3)
+			polylines(image, &p, &n, 1, true, Scalar(0, 255, 0), 3, LINE_AA);
+	}
+
+	imshow("Detected Squares", image);
+}
+
+bool checkIfSquare(vector<Point>& approx)
+{
+	int x1 = approx[0].x;
+	int y1 = approx[0].y;
+
+	int x2 = approx[1].x;
+	int y2 = approx[1].y;
+	int sum = sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2) * 1.0);
+	int perimeter = 0;
+
+	for (int i = 0; i < 4; i++)
+	{
+		int j = i + 1;
+		if (i == 3)
+		{
+			j = 0;
+		}
+		perimeter = perimeter + sqrt(pow(approx[j].x - approx[i].x, 2) + pow(approx[j].y - approx[i].y, 2) * 1.0);
+	//	cout << perimeter << "\n";
+	}
+
+	//cout << "Perimeter is " << perimeter / 4 << " And sum is " << sum << "\n";
+	if (perimeter / 4 <= sum - 1 || perimeter / 4 >= sum + 1)
+	{
+		return true;
+	}
+	return false;
+}
+
 void squareDetector(const Mat& image, vector<vector<Point> >& squares)
 {
 	squares.clear();
-    Mat pyr, timg, gray0(image.size(), CV_8U), gray;
-    // down-scale and upscale the image to filter out the noise
-    pyrDown(image, pyr, Size(image.cols/2, image.rows/2));
-    pyrUp(pyr, timg, image.size());
-    vector<vector<Point> > contours;
-	//find squares in every color plane of the image
+
+	//s    Mat pyr, timg, gray0(image.size(), CV_8U), gray;
+
+		// down-scale and upscale the image to filter out the noise
+		//pyrDown(image, pyr, Size(image.cols/2, image.rows/2));
+		//pyrUp(pyr, timg, image.size());
+
+
+		// blur will enhance edge detection
+	Mat image_copy = image.clone();
+	Mat timg(image_copy);
+	medianBlur(image_copy, timg, 9);
+	Mat gray0(timg.size(), CV_8U), gray;
+
+	vector<vector<Point> > contours;
+
+	// find squares in every color plane of the image
 	for (int c = 0; c < 3; c++)
 	{
-		int ch[] = { c,0 };
+		int ch[] = { c, 0 };
 		mixChannels(&timg, 1, &gray0, 1, ch, 1);
 
-		//Try several threshold levels
+		// try several threshold levels
 		for (int l = 0; l < N; l++)
 		{
-			//Use Canny filter
+			// hack: use Canny instead of zero threshold level.
+			// Canny helps to catch squares with gradient shading
 			if (l == 0)
 			{
-				Canny(gray0, gray, 0, thres, 5);
-				//dilate canny to remove holes between edges
+				// apply Canny. Take the upper threshold from slider
+				// and set the lower to 0 (which forces edges merging)
+				Canny(gray0, gray, 5, thresh, 5);
+				// dilate canny output to remove potential
+				// holes between edge segments
 				dilate(gray, gray, Mat(), Point(-1, -1));
 			}
 			else
 			{
-				// apply threshold if l!=0
+				// apply threshold if l!=0:
 				//     tgray(x,y) = gray(x,y) < (l+1)*255/N ? 255 : 0
 				gray = gray0 >= (l + 1) * 255 / N;
 			}
+
 			// find contours and store them all as a list
 			findContours(gray, contours, RETR_LIST, CHAIN_APPROX_SIMPLE);
+
 			vector<Point> approx;
 
-			//Test each contour
+			// test each contour
 			for (size_t i = 0; i < contours.size(); i++)
 			{
-				// Approximate contour with accuracy proportional to the contour perimeter
-				approxPolyDP(contours[i], approx, arcLength(contours[i], true) * 0.02, true);
+				// approximate contour with accuracy proportional
+				// to the contour perimeter
+				approxPolyDP(Mat(contours[i]), approx, arcLength(Mat(contours[i]), true) * 0.02, true);
 
 				// square contours should have 4 vertices after approximation
 				// relatively large area (to filter out noisy contours)
@@ -139,65 +201,56 @@ void squareDetector(const Mat& image, vector<vector<Point> >& squares)
 				// area may be positive or negative - in accordance with the
 				// contour orientation
 				if (approx.size() == 4 &&
-					fabs(contourArea(approx)) > 1000 &&
-					isContourConvex(approx))
+					fabs(contourArea(Mat(approx))) > 1000 &&
+					isContourConvex(Mat(approx)))
 				{
 					double maxCosine = 0;
 
 					for (int j = 2; j < 5; j++)
 					{
-						//find the maximum cosine of the angle between joint edges
+						// find the maximum cosine of the angle between joint edges
 						double cosine = fabs(angle(approx[j % 4], approx[j - 2], approx[j - 1]));
 						maxCosine = MAX(maxCosine, cosine);
 					}
+
 					// if cosines of all angles are small
 					// (all angles are ~90 degree) then write quandrange
 					// vertices to resultant sequence
-					if (maxCosine > 0.3)
+					if (maxCosine < 0.3) {
 						squares.push_back(approx);
-				}
 
+						if (checkIfSquare(approx) == false)
+						{
+							squares.pop_back();
+						}
+					}
+				}
 			}
 		}
 	}
-	polylines(image, squares, true, Scalar(0, 255, 0), 3, LINE_AA);
-	imshow("Square window", image);
+	imshow("Square Check window", image_copy);
 	waitKey(25);
-
 }
 
 int main() {
-
 	Mat image;
-
-	namedWindow("Display window");
-
 	VideoCapture cap(0);
+	//cap.set(CAP_PROP_FRAME_HEIGHT, 300);
+	//cap.set(CAP_PROP_FRAME_WIDTH, 300);
 
 	if (!cap.isOpened()) {
-
 		cout << "cannot open camera";
-
 	}
-
-
 	while (true) {
-
 		cap >> image;
-		
 		//regularDetection(image);
-
-
 		//circleCountour(image);
-
 		//imshow("Original window", image);
-		vector<vector<Point> > squares;
+		vector<vector<Point>> squares;
 		squareDetector(image, squares);
-		polylines(image, squares, true, Scalar(0, 255, 0), 3, LINE_AA);	
+		drawSquares(image, squares);
 		//destroyAllWindows();	
-	
 	}
-
 	return 0;
 
 }
